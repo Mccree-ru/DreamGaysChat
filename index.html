@@ -5,10 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Анонимный Чат-Рулетка</title>
     
-    <!-- Telegram Web Apps SDK -->
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     
-    <!-- Supabase JS SDK -->
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 
     <style>
@@ -187,21 +185,22 @@
             text-align: center;
         }
 
-        /* Оптимистичный статус "отправка..." */
         .message.pending {
             opacity: 0.6;
         }
 
+        /* Превью картинок в чате */
         .message img {
             max-width: 100%;
             max-height: 250px;
             border-radius: 10px;
             display: block;
             margin-top: 5px;
-            pointer-events: none;
+            cursor: pointer; /* Показываем, что кликабельно */
             -webkit-touch-callout: none;
         }
 
+        /* Превью видео в чате */
         .message video {
             max-width: 100%;
             max-height: 250px;
@@ -210,6 +209,7 @@
             margin-top: 5px;
             -webkit-touch-callout: none;
             background: #000;
+            cursor: pointer;
         }
 
         .chat-input-area {
@@ -291,11 +291,64 @@
             border-radius: 12px;
             font-weight: bold;
         }
+
+        /* МОДАЛЬНОЕ ОКНО ДЛЯ ПОЛНОЭКРАННОГО ПРОСМОТРА С МАКСИМАЛЬНОЙ ЗАЩИТОЙ */
+        .fullscreen-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background-color: rgba(0, 0, 0, 0.95);
+            z-index: 9999;
+            justify-content: center;
+            align-items: center;
+            flex-direction: column;
+        }
+
+        .fullscreen-overlay.active {
+            display: flex;
+        }
+
+        .fullscreen-overlay img, .fullscreen-overlay video {
+            max-width: 95%;
+            max-height: 85%;
+            border-radius: 4px;
+            box-shadow: 0 5px 25px rgba(0,0,0,0.5);
+            -webkit-touch-callout: none;
+        }
+
+        /* Запрещаем перетаскивать картинку на весь экран */
+        .fullscreen-overlay img {
+            pointer-events: none; 
+        }
+
+        .fullscreen-close-btn {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(255, 255, 255, 0.15);
+            color: white;
+            border: none;
+            font-size: 24px;
+            width: 45px;
+            height: 45px;
+            border-radius: 50%;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 300;
+        }
+
+        .fullscreen-close-btn:active {
+            background: rgba(255, 255, 255, 0.3);
+        }
     </style>
 </head>
 <body>
 
-    <!-- 1. ЭКРАН ПРИВЕТСТВИЯ -->
     <div id="screen-welcome" class="screen active">
         <h1 style="margin-bottom: 20px;">Анонимный Чат</h1>
         
@@ -313,14 +366,12 @@
         </div>
     </div>
 
-    <!-- 2. ЭКРАН ПОИСКА / ОЖИДАНИЯ -->
     <div id="screen-search" class="screen">
         <div class="loader"></div>
         <p style="margin-bottom: 20px; text-align: center;" id="search-status">Ищем свободного собеседника...</p>
         <button id="btn-cancel-search" class="btn btn-danger">Отмена</button>
     </div>
 
-    <!-- 3. ЭКРАН ЧАТА -->
     <div id="screen-chat" class="screen">
         <div class="chat-header">
             <span id="chat-room-title">Чат</span>
@@ -335,6 +386,11 @@
             <input type="text" id="chat-message-input" class="chat-input" placeholder="Сообщение..." autocomplete="off">
             <button id="btn-send-message" class="send-btn">➔</button>
         </div>
+    </div>
+
+    <div id="media-viewer-overlay" class="fullscreen-overlay">
+        <button class="fullscreen-close-btn" id="btn-close-viewer">✕</button>
+        <div id="viewer-content-box" style="width: 100%; height: 100%; display: flex; justify-content: center; align-items: center;"></div>
     </div>
 
     <script>
@@ -358,7 +414,6 @@
         let chatSubscription = null;
         let mainRefreshInterval = null;
         
-        // Буфер для предотвращения дублирования сообщений из Realtime
         const localSentMessages = new Set();
 
         function showScreen(screenId) {
@@ -408,6 +463,38 @@
             box.scrollTop = box.scrollHeight;
         }
 
+        // ОТКРЫТИЕ МЕДИА НА ВЕСЬ ЭКРАН
+        function openMediaFullscreen(url, type) {
+            const overlay = document.getElementById('media-viewer-overlay');
+            const container = document.getElementById('viewer-content-box');
+            container.innerHTML = ''; // Очищаем старый контент
+
+            if (type === 'image') {
+                const img = document.createElement('img');
+                img.src = url;
+                img.addEventListener('dragstart', e => e.preventDefault());
+                container.appendChild(img);
+            } else if (type === 'video') {
+                const video = document.createElement('video');
+                video.src = url;
+                video.controls = true;
+                video.autoplay = true;
+                video.controlsList = "nodownload nofullscreen";
+                video.addEventListener('dragstart', e => e.preventDefault());
+                video.addEventListener('contextmenu', e => e.preventDefault());
+                container.appendChild(video);
+            }
+
+            overlay.classList.add('active');
+        }
+
+        function closeMediaFullscreen() {
+            const overlay = document.getElementById('media-viewer-overlay');
+            const container = document.getElementById('viewer-content-box');
+            container.innerHTML = ''; // Останавливаем воспроизведение видео при закрытии
+            overlay.classList.remove('active');
+        }
+
         function appendMessage(senderId, content, type = 'text', metadata = null, isPending = false) {
             const box = document.getElementById('messages-box');
             const msg = document.createElement('div');
@@ -429,14 +516,18 @@
                 const img = document.createElement('img');
                 img.src = content;
                 img.addEventListener('dragstart', e => e.preventDefault());
+                // Клик открывает картинку на весь экран
+                img.addEventListener('click', () => openMediaFullscreen(content, 'image'));
                 msg.appendChild(img);
             } else if (type === 'video') {
                 const video = document.createElement('video');
                 video.src = content;
-                video.controls = true;
-                video.controlsList = "nodownload nofullscreen"; 
+                video.controls = false; // Отключаем элементы управления в самом чате, чтобы клик открывал весь экран
+                video.muted = true;
                 video.addEventListener('dragstart', e => e.preventDefault());
                 video.addEventListener('contextmenu', e => e.preventDefault());
+                // Клик открывает видео на весь экран, где уже будут кнопки Play/Громкость
+                video.addEventListener('click', () => openMediaFullscreen(content, 'video'));
                 msg.appendChild(video);
             }
             
@@ -535,7 +626,6 @@
         function subscribeToChatEvents(roomId) {
             chatSubscription = supabaseClient.channel(`room_${roomId}`)
                 .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `room_id=eq.${roomId}` }, (payload) => {
-                    // Если это сообщение отправили мы и оно уже отрисовано оптимистично, игнорируем дубль
                     const msgKey = `${payload.new.sender_id}_${payload.new.content}`;
                     if (payload.new.sender_id === myUserId && localSentMessages.has(msgKey)) {
                         return; 
@@ -555,6 +645,7 @@
             currentRoomId = null;
             isNamedRoomCreator = false;
             localSentMessages.clear();
+            closeMediaFullscreen();
         }
 
         async function sendMessage() {
@@ -563,12 +654,11 @@
             if (!text || !currentRoomId) return;
             input.value = '';
 
-            // ОПТИМИСТИЧНЫЙ ИНТЕРФЕЙС: Выводим сообщение на экран СРАЗУ, без задержек
             const pendingMsg = appendMessage(myUserId, text, 'text', { nickname: userNickname }, true);
             const msgKey = `${myUserId}_${text}`;
             localSentMessages.add(msgKey);
 
-            // Отправляем в базу на заднем фоне (асинхронно)
+            // Асинхронная отправка
             supabaseClient.from('messages').insert({
                 room_id: currentRoomId,
                 sender_id: myUserId,
@@ -577,9 +667,9 @@
                 metadata: { nickname: userNickname }
             }).then(({ error }) => {
                 if (!error) {
-                    pendingMsg.classList.remove('pending'); // Убираем прозрачность, отправка успешна
+                    pendingMsg.classList.remove('pending'); 
                 } else {
-                    pendingMsg.style.backgroundColor = '#551a1a'; // Красный оттенок, если ошибка
+                    pendingMsg.style.backgroundColor = '#551a1a'; 
                 }
             });
         }
@@ -613,7 +703,6 @@
 
                 const telegramMediaUrl = `https://api.telegram.org/file/bot${TG_BOT_TOKEN}/${pathData.result.file_path}`;
 
-                // Локально метим медиа, чтобы не дублировать
                 localSentMessages.add(`${myUserId}_${telegramMediaUrl}`);
                 appendMessage(myUserId, telegramMediaUrl, msgType, { nickname: userNickname });
 
@@ -664,6 +753,9 @@
             document.getElementById('btn-send-message').addEventListener('click', sendMessage);
             document.getElementById('btn-media-attach').addEventListener('click', () => document.getElementById('media-file-input').click());
             
+            // Кнопка закрытия просмотрщика медиа
+            document.getElementById('btn-close-viewer').addEventListener('click', closeMediaFullscreen);
+
             document.getElementById('media-file-input').addEventListener('change', (e) => {
                 if (e.target.files[0]) { uploadAndSendMedia(e.target.files[0]); e.target.value = ''; }
             });
