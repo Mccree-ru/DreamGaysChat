@@ -436,7 +436,6 @@
         const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
         const TG_BOT_TOKEN = "8998246333:AAHI0pr4lgsqmwvQTgbKYZ5iwWaqiOJLZqM";
-        const TG_STORAGE_CHAT_ID = "1878167621";
 
         let myUserId = 'local_' + Math.random().toString(36).substr(2, 9);
         const tg = window.Telegram?.WebApp;
@@ -450,9 +449,9 @@
         let roomsSubscription = null;
         let chatSubscription = null;
         let mainRefreshInterval = null;
-        let isSearchingCurrently = false; 
-        let knownRoomIds = new Set(); // Для отслеживания действительно НОВЫХ комнат
-
+        let isSearchingCurrently = false;
+        let isCancelling = false; // Флаг для предотвращения множественных отмен
+        let knownRoomIds = new Set();
         const localSentMessages = new Set();
 
         // СИНТЕЗАТОР МИКРО-ЗВУКОВ НА WEB AUDIO API
@@ -469,7 +468,6 @@
                     osc.type = type;
                     osc.frequency.setValueAtTime(frequency, ctx.currentTime);
                     
-                    // Плавное затухание, чтобы звук не щелкал в конце
                     gain.gain.setValueAtTime(0.15, ctx.currentTime); 
                     gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + duration);
                     
@@ -485,16 +483,16 @@
         }
 
         function playSoundMessage() {
-            playTone(600, 0.08, 'sine'); // Мягкий писк для сообщений
+            playTone(600, 0.08, 'sine');
         }
 
         function playSoundMatch() {
-            playTone(800, 0.1, 'sine');     // Двойной перелив вверх при коннекте
+            playTone(800, 0.1, 'sine');
             playTone(1000, 0.15, 'sine', 0.08);
         }
 
         function playSoundNewRoom() {
-            playTone(440, 0.05, 'triangle'); // Короткий глухой клик при новой комнате
+            playTone(440, 0.05, 'triangle');
         }
 
         function showScreen(screenId) {
@@ -502,56 +500,66 @@
             document.getElementById(screenId).classList.add('active');
             
             if (screenId === 'screen-welcome') {
-                loadPublicRooms(true); // Первый запуск - не пищать
-                if (!mainRefreshInterval) mainRefreshInterval = setInterval(() => loadPublicRooms(false), 4000);
+                loadPublicRooms(true);
+                if (!mainRefreshInterval) {
+                    mainRefreshInterval = setInterval(() => loadPublicRooms(false), 4000);
+                }
             } else {
-                clearInterval(mainRefreshInterval);
-                mainRefreshInterval = null;
+                if (mainRefreshInterval) {
+                    clearInterval(mainRefreshInterval);
+                    mainRefreshInterval = null;
+                }
             }
         }
 
         async function loadPublicRooms(isFirstLoad = false) {
-            const { data, error } = await supabaseClient.from('rooms').select('id, room_name, user1_id').is('user2_id', null).not('room_name', 'is', null);
-            if (error) return;
+            try {
+                const { data, error } = await supabaseClient.from('rooms')
+                    .select('id, room_name, user1_id')
+                    .is('user2_id', null)
+                    .not('room_name', 'is', null);
+                    
+                if (error) return;
 
-            const listContainer = document.getElementById('rooms-list');
-            const availableRooms = data ? data.filter(r => r.user1_id !== myUserId) : [];
+                const listContainer = document.getElementById('rooms-list');
+                const availableRooms = data ? data.filter(r => r.user1_id !== myUserId) : [];
 
-            // Проверяем, появились ли реально новые комнаты
-            if (!isFirstLoad && availableRooms.length > 0) {
-                let hasNew = false;
-                availableRooms.forEach(room => {
-                    if (!knownRoomIds.has(room.id)) {
-                        hasNew = true;
+                if (!isFirstLoad && availableRooms.length > 0) {
+                    let hasNew = false;
+                    availableRooms.forEach(room => {
+                        if (!knownRoomIds.has(room.id)) {
+                            hasNew = true;
+                        }
+                    });
+                    if (hasNew) {
+                        playSoundNewRoom();
                     }
-                });
-                if (hasNew) {
-                    playSoundNewRoom(); // МИКРОЗВУК 3: НОВАЯ КОМНАТА
                 }
+
+                knownRoomIds.clear();
+                availableRooms.forEach(r => knownRoomIds.add(r.id));
+
+                if (availableRooms.length === 0) {
+                    listContainer.innerHTML = '<div style="color: #666; text-align: center; font-size: 13px; padding: 10px;">Нет активных комнат.</div>';
+                    return;
+                }
+
+                listContainer.innerHTML = '';
+                availableRooms.forEach(room => {
+                    const item = document.createElement('div');
+                    item.className = 'room-item';
+                    item.innerHTML = `<span>${room.room_name}</span><span class="join-badge">Войти</span>`;
+                    item.addEventListener('click', () => joinSpecificRoom(room.id, room.room_name));
+                    listContainer.appendChild(item);
+                });
+            } catch (error) {
+                console.error('Error loading rooms:', error);
             }
-
-            // Перезаписываем кэш комнат
-            knownRoomIds.clear();
-            availableRooms.forEach(r => knownRoomIds.add(r.id));
-
-            if (availableRooms.length === 0) {
-                listContainer.innerHTML = '<div style="color: #666; text-align: center; font-size: 13px; padding: 10px;">Нет активных комнат.</div>';
-                return;
-            }
-
-            listContainer.innerHTML = '';
-            availableRooms.forEach(room => {
-                const item = document.createElement('div');
-                item.className = 'room-item';
-                item.innerHTML = `<span>${room.room_name}</span><span class="join-badge">Войти</span>`;
-                item.addEventListener('click', () => joinSpecificRoom(room.id, room.room_name));
-                listContainer.appendChild(item);
-            });
         }
 
         function setNickname() {
             const input = document.getElementById('input-nickname').value.trim();
-            userNickname = input ? input : "Аноним_" + Math.random().toString().substr(2, 4);
+            userNickname = input ? input : "Аноним_" + Math.random().toString(36).substr(2, 4);
         }
 
         function addSystemMessage(text) {
@@ -653,22 +661,41 @@
         }
 
         async function startSearch() {
+            // Проверяем, не идет ли уже поиск
+            if (isSearchingCurrently || isCancelling) return;
+            
             setNickname();
             isNamedRoomCreator = false;
             toggleSearchWidget(true, "Ищем свободного собеседника...");
             
-            const { data, error } = await supabaseClient.rpc('try_match_user', { current_user_id: myUserId });
-            if (error) { toggleSearchWidget(false); return; }
+            try {
+                const { data, error } = await supabaseClient.rpc('try_match_user', { current_user_id: myUserId });
+                
+                // Проверяем, не была ли отмена во время запроса
+                if (isCancelling || !isSearchingCurrently) {
+                    return;
+                }
+                
+                if (error) {
+                    toggleSearchWidget(false);
+                    return;
+                }
 
-            if (data.status === 'matched') {
+                if (data && data.status === 'matched') {
+                    toggleSearchWidget(false);
+                    enterRoom(data.room_id, "Собеседник найден");
+                } else {
+                    subscribeToRooms();
+                }
+            } catch (error) {
+                console.error('Error in startSearch:', error);
                 toggleSearchWidget(false);
-                enterRoom(data.room_id, "Собеседник найден");
-            } else {
-                subscribeToRooms();
             }
         }
 
         async function createNamedRoom() {
+            if (isSearchingCurrently || isCancelling) return;
+            
             const nameInput = document.getElementById('input-room-name');
             const roomName = nameInput.value.trim();
             if (!roomName) { alert("Введите название комнаты!"); return; }
@@ -677,19 +704,33 @@
 
             toggleSearchWidget(true, `Комната "${roomName}" создана. Ожидаем подключения...`);
 
-            const { data, error } = await supabaseClient.rpc('join_or_create_named_room', {
-                current_user_id: myUserId,
-                input_room_name: roomName
-            });
+            try {
+                const { data, error } = await supabaseClient.rpc('join_or_create_named_room', {
+                    current_user_id: myUserId,
+                    input_room_name: roomName
+                });
 
-            if (error) { toggleSearchWidget(false); return; }
+                if (isCancelling || !isSearchingCurrently) {
+                    return;
+                }
 
-            isNamedRoomCreator = true;
-            currentRoomId = data.room_id;
-            subscribeToNamedRoomUpdates(data.room_id, roomName);
+                if (error) {
+                    toggleSearchWidget(false);
+                    return;
+                }
+
+                isNamedRoomCreator = true;
+                currentRoomId = data.room_id;
+                subscribeToNamedRoomUpdates(data.room_id, roomName);
+            } catch (error) {
+                console.error('Error in createNamedRoom:', error);
+                toggleSearchWidget(false);
+            }
         }
 
         async function joinSpecificRoom(roomId, roomName) {
+            if (isCancelling) return;
+            
             setNickname();
             
             if (isSearchingCurrently) {
@@ -699,19 +740,38 @@
 
             isNamedRoomCreator = false;
 
-            const { error } = await supabaseClient.from('rooms').update({ user2_id: myUserId }).eq('id', roomId).is('user2_id', null);
-            if (error) {
-                alert("Не удалось подключиться. Возможно, комната уже занята.");
-                loadPublicRooms(true);
-                return;
+            try {
+                const { error } = await supabaseClient.from('rooms')
+                    .update({ user2_id: myUserId })
+                    .eq('id', roomId)
+                    .is('user2_id', null);
+                    
+                if (error) {
+                    alert("Не удалось подключиться. Возможно, комната уже занята.");
+                    loadPublicRooms(true);
+                    return;
+                }
+                enterRoom(roomId, `Комната: ${roomName}`);
+            } catch (error) {
+                console.error('Error in joinSpecificRoom:', error);
+                alert("Ошибка подключения к комнате");
             }
-            enterRoom(roomId, `Комната: ${roomName}`);
         }
 
         function subscribeToNamedRoomUpdates(roomId, roomName) {
+            if (roomsSubscription) {
+                supabaseClient.removeChannel(roomsSubscription);
+                roomsSubscription = null;
+            }
+            
             roomsSubscription = supabaseClient.channel(`named_room_${roomId}`)
-                .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'rooms', filter: `id=eq.${roomId}` }, (payload) => {
-                    if (payload.new.user2_id) {
+                .on('postgres_changes', { 
+                    event: 'UPDATE', 
+                    schema: 'public', 
+                    table: 'rooms', 
+                    filter: `id=eq.${roomId}` 
+                }, (payload) => {
+                    if (payload.new.user2_id && !isCancelling) {
                         unsubscribeFromRooms();
                         toggleSearchWidget(false);
                         enterRoom(payload.new.id, `Комната: ${roomName}`);
@@ -721,9 +781,18 @@
         }
 
         function subscribeToRooms() {
+            if (roomsSubscription) {
+                supabaseClient.removeChannel(roomsSubscription);
+                roomsSubscription = null;
+            }
+            
             roomsSubscription = supabaseClient.channel('room_match_channel')
-                .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'rooms' }, (payload) => {
-                    if (payload.new.user2_id === myUserId || payload.new.user1_id === myUserId) {
+                .on('postgres_changes', { 
+                    event: 'INSERT', 
+                    schema: 'public', 
+                    table: 'rooms' 
+                }, (payload) => {
+                    if (!isCancelling && (payload.new.user2_id === myUserId || payload.new.user1_id === myUserId)) {
                         unsubscribeFromRooms();
                         toggleSearchWidget(false);
                         enterRoom(payload.new.id, "Собеседник найден");
@@ -733,7 +802,14 @@
         }
 
         function unsubscribeFromRooms() {
-            if (roomsSubscription) { supabaseClient.removeChannel(roomsSubscription); roomsSubscription = null; }
+            if (roomsSubscription) {
+                try {
+                    supabaseClient.removeChannel(roomsSubscription);
+                } catch (e) {
+                    console.error('Error removing rooms subscription:', e);
+                }
+                roomsSubscription = null;
+            }
         }
 
         function enterRoom(roomId, titleText) {
@@ -744,14 +820,24 @@
             showScreen('screen-chat');
             addSystemMessage("Вы подключились. Приятного общения!");
             
-            playSoundMatch(); // МИКРОЗВУК 2: СОБЕСЕДНИК НАЙДЕН
+            playSoundMatch();
             
             subscribeToChatEvents(roomId);
         }
 
         function subscribeToChatEvents(roomId) {
+            if (chatSubscription) {
+                supabaseClient.removeChannel(chatSubscription);
+                chatSubscription = null;
+            }
+            
             chatSubscription = supabaseClient.channel(`room_${roomId}`)
-                .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `room_id=eq.${roomId}` }, (payload) => {
+                .on('postgres_changes', { 
+                    event: 'INSERT', 
+                    schema: 'public', 
+                    table: 'messages', 
+                    filter: `room_id=eq.${roomId}` 
+                }, (payload) => {
                     if (payload.new.type === 'system_leave') {
                         cleanChatSession();
                         showScreen('screen-welcome');
@@ -765,14 +851,18 @@
                         return; 
                     }
                     
-                    // Если сообщение пришло от другого человека — включаем звук
                     if (payload.new.sender_id !== myUserId) {
-                        playSoundMessage(); // МИКРОЗВУК 1: НОВОЕ СООБЩЕНИЕ
+                        playSoundMessage();
                     }
 
                     appendMessage(payload.new.sender_id, payload.new.content, payload.new.type, payload.new.metadata);
                 })
-                .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'rooms', filter: `id=eq.${roomId}` }, (payload) => {
+                .on('postgres_changes', { 
+                    event: 'DELETE', 
+                    schema: 'public', 
+                    table: 'rooms', 
+                    filter: `id=eq.${roomId}` 
+                }, (payload) => {
                     if (currentRoomId === roomId) {
                         cleanChatSession();
                         showScreen('screen-welcome');
@@ -783,11 +873,20 @@
         }
 
         function cleanChatSession() {
-            if (chatSubscription) { supabaseClient.removeChannel(chatSubscription); chatSubscription = null; }
+            if (chatSubscription) {
+                try {
+                    supabaseClient.removeChannel(chatSubscription);
+                } catch (e) {
+                    console.error('Error removing chat subscription:', e);
+                }
+                chatSubscription = null;
+            }
+            unsubscribeFromRooms();
             currentRoomId = null;
             isNamedRoomCreator = false;
             localSentMessages.clear();
             closeMediaFullscreen();
+            isCancelling = false;
         }
 
         async function sendMessage() {
@@ -800,100 +899,138 @@
             const msgKey = `${myUserId}_${text}`;
             localSentMessages.add(msgKey);
 
-            supabaseClient.from('messages').insert({
-                room_id: currentRoomId,
-                sender_id: myUserId,
-                content: text,
-                type: 'text',
-                metadata: { nickname: userNickname }
-            }).then(({ error }) => {
-                if (!error) {
-                    pendingMsg.classList.remove('pending'); 
+            try {
+                const { error } = await supabaseClient.from('messages').insert({
+                    room_id: currentRoomId,
+                    sender_id: myUserId,
+                    content: text,
+                    type: 'text',
+                    metadata: { nickname: userNickname }
+                });
+                
+                if (error) {
+                    pendingMsg.style.backgroundColor = '#551a1a';
+                    console.error('Error sending message:', error);
                 } else {
-                    pendingMsg.style.backgroundColor = '#551a1a'; 
+                    pendingMsg.classList.remove('pending');
                 }
-            });
+            } catch (error) {
+                pendingMsg.style.backgroundColor = '#551a1a';
+                console.error('Error sending message:', error);
+            }
         }
 
-    async function uploadAndSendMedia(file) {
-        if (!currentRoomId || !file) return;
+        async function uploadAndSendMedia(file) {
+            if (!currentRoomId || !file) return;
+            
+            const isVideo = file.type.startsWith("video/");
+            const MAX_IMAGE_SIZE = 5 * 1024 * 1024;
+            const MAX_VIDEO_SIZE = 15 * 1024 * 1024;
         
-        const isVideo = file.type.startsWith("video/");
-        const MAX_IMAGE_SIZE = 5 * 1024 * 1024;
-        const MAX_VIDEO_SIZE = 15 * 1024 * 1024;
-    
-        if (isVideo && file.size > MAX_VIDEO_SIZE) { alert("Максимальный размер видео — 15 МБ."); return; }
-        if (!isVideo && file.size > MAX_IMAGE_SIZE) { alert("Максимальный размер картинок — 5 МБ."); return; }
-    
-        addSystemMessage("Отправка медиафайла...");
-        let method = isVideo ? "sendVideo" : "sendPhoto";
-        let typeKey = isVideo ? "video" : "photo";
-        let msgType = isVideo ? "video" : "image";
-    
-        const formData = new FormData();
-        // Указываем твой новый ID чата
-        formData.append("chat_id", "-1003536471476"); 
-        // Указываем ID темы (топика) внутри этой группы
-        formData.append("message_thread_id", "1"); 
-        formData.append(typeKey, file);
-    
-        try {
-            const response = await fetch(`https://api.telegram.org/bot${TG_BOT_TOKEN}/${method}`, { method: "POST", body: formData });
-            const resData = await response.json();
-            
-            if (!resData.ok) {
-                addSystemMessage("Ошибка Telegram: " + resData.description);
-                return;
+            if (isVideo && file.size > MAX_VIDEO_SIZE) { 
+                alert("Максимальный размер видео — 15 МБ."); 
+                return; 
             }
-            
-            let fileId = msgType === "image" ? resData.result.photo[resData.result.photo.length - 1].file_id : resData.result.video.file_id;
-            const pathResponse = await fetch(`https://api.telegram.org/bot${TG_BOT_TOKEN}/getFile?file_id=${fileId}`);
-            const pathData = await pathResponse.json();
-    
-            const telegramMediaUrl = `https://api.telegram.org/file/bot${TG_BOT_TOKEN}/${pathData.result.file_path}`;
-    
-            localSentMessages.add(`${myUserId}_${telegramMediaUrl}`);
-            appendMessage(myUserId, telegramMediaUrl, msgType, { nickname: userNickname });
-    
-            await supabaseClient.from('messages').insert({
-                room_id: currentRoomId,
-                sender_id: myUserId,
-                content: telegramMediaUrl,
-                type: msgType,
-                metadata: { nickname: userNickname }
-            });
-        } catch (err) { 
-            addSystemMessage("Ошибка при загрузке медиа."); 
+            if (!isVideo && file.size > MAX_IMAGE_SIZE) { 
+                alert("Максимальный размер картинок — 5 МБ."); 
+                return; 
+            }
+        
+            addSystemMessage("Отправка медиафайла...");
+            let method = isVideo ? "sendVideo" : "sendPhoto";
+            let typeKey = isVideo ? "video" : "photo";
+            let msgType = isVideo ? "video" : "image";
+        
+            const formData = new FormData();
+            formData.append("chat_id", "-1003536471476"); 
+            formData.append("message_thread_id", "1"); 
+            formData.append(typeKey, file);
+        
+            try {
+                const response = await fetch(`https://api.telegram.org/bot${TG_BOT_TOKEN}/${method}`, { 
+                    method: "POST", 
+                    body: formData 
+                });
+                const resData = await response.json();
+                
+                if (!resData.ok) {
+                    addSystemMessage("Ошибка Telegram: " + resData.description);
+                    return;
+                }
+                
+                let fileId = msgType === "image" ? 
+                    resData.result.photo[resData.result.photo.length - 1].file_id : 
+                    resData.result.video.file_id;
+                    
+                const pathResponse = await fetch(`https://api.telegram.org/bot${TG_BOT_TOKEN}/getFile?file_id=${fileId}`);
+                const pathData = await pathResponse.json();
+        
+                const telegramMediaUrl = `https://api.telegram.org/file/bot${TG_BOT_TOKEN}/${pathData.result.file_path}`;
+        
+                localSentMessages.add(`${myUserId}_${telegramMediaUrl}`);
+                appendMessage(myUserId, telegramMediaUrl, msgType, { nickname: userNickname });
+        
+                await supabaseClient.from('messages').insert({
+                    room_id: currentRoomId,
+                    sender_id: myUserId,
+                    content: telegramMediaUrl,
+                    type: msgType,
+                    metadata: { nickname: userNickname }
+                });
+            } catch (err) { 
+                addSystemMessage("Ошибка при загрузке медиа."); 
+                console.error('Error uploading media:', err);
+            }
         }
-    }
 
         async function cancelSearchButtonClicked() {
-            await silentCancelSearch();
-            toggleSearchWidget(false);
+            if (isCancelling) return;
+            isCancelling = true;
+            
+            try {
+                await silentCancelSearch();
+                toggleSearchWidget(false);
+            } catch (error) {
+                console.error('Error cancelling search:', error);
+                toggleSearchWidget(false);
+            } finally {
+                isCancelling = false;
+            }
         }
 
         async function silentCancelSearch() {
             unsubscribeFromRooms();
-            if (isNamedRoomCreator && currentRoomId) {
-                await supabaseClient.from('rooms').delete().eq('id', currentRoomId);
-            } else {
-                await supabaseClient.from('queue').delete().eq('user_id', myUserId);
+            
+            try {
+                if (isNamedRoomCreator && currentRoomId) {
+                    await supabaseClient.from('rooms').delete().eq('id', currentRoomId);
+                } else {
+                    await supabaseClient.from('queue').delete().eq('user_id', myUserId);
+                }
+            } catch (error) {
+                console.error('Error during silent cancel search:', error);
             }
+            
             currentRoomId = null;
             isNamedRoomCreator = false;
+            isSearchingCurrently = false;
         }
 
         async function leaveChat() {
             if (confirm("Вы уверены, что хотите покинуть чат?")) {
                 const roomToLeave = currentRoomId;
                 if (roomToLeave) {
-                    await supabaseClient.from('messages').insert({
-                        room_id: roomToLeave,
-                        sender_id: myUserId,
-                        content: 'leave',
-                        type: 'system_leave',
-                        metadata: { nickname: userNickname }
-                    });
+                    try {
+                        await supabaseClient.from('messages').insert({
+                            room_id: roomToLeave,
+                            sender_id: myUserId,
+                            content: 'leave',
+                            type: 'system_leave',
+                            metadata: { nickname: userNickname }
+                        });
+                    } catch (error) {
+                        console.error('Error sending leave message:', error);
+                    }
                 }
                 cleanChatSession();
                 showScreen('screen-welcome');
@@ -919,9 +1056,15 @@
             document.getElementById('btn-close-viewer').addEventListener('click', closeMediaFullscreen);
 
             document.getElementById('media-file-input').addEventListener('change', (e) => {
-                if (e.target.files[0]) { uploadAndSendMedia(e.target.files[0]); e.target.value = ''; }
+                if (e.target.files[0]) { 
+                    uploadAndSendMedia(e.target.files[0]); 
+                    e.target.value = ''; 
+                }
             });
-            document.getElementById('chat-message-input').addEventListener('keypress', (e) => { if (e.key === 'Enter') sendMessage(); });
+            
+            document.getElementById('chat-message-input').addEventListener('keypress', (e) => { 
+                if (e.key === 'Enter') sendMessage(); 
+            });
 
             showScreen('screen-welcome');
         });
