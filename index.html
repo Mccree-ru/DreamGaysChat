@@ -450,9 +450,10 @@
         let chatSubscription = null;
         let mainRefreshInterval = null;
         let isSearchingCurrently = false;
-        let isCancelling = false; // Флаг для предотвращения множественных отмен
+        let isCancelling = false;
         let knownRoomIds = new Set();
         const localSentMessages = new Set();
+        let isLeavingChat = false; // Флаг для предотвращения двойного уведомления
 
         // СИНТЕЗАТОР МИКРО-ЗВУКОВ НА WEB AUDIO API
         function playTone(frequency, duration, type = 'sine', delay = 0) {
@@ -661,7 +662,6 @@
         }
 
         async function startSearch() {
-            // Проверяем, не идет ли уже поиск
             if (isSearchingCurrently || isCancelling) return;
             
             setNickname();
@@ -671,7 +671,6 @@
             try {
                 const { data, error } = await supabaseClient.rpc('try_match_user', { current_user_id: myUserId });
                 
-                // Проверяем, не была ли отмена во время запроса
                 if (isCancelling || !isSearchingCurrently) {
                     return;
                 }
@@ -771,7 +770,7 @@
                     table: 'rooms', 
                     filter: `id=eq.${roomId}` 
                 }, (payload) => {
-                    if (payload.new.user2_id && !isCancelling) {
+                    if (payload.new.user2_id && !isCancelling && !isLeavingChat) {
                         unsubscribeFromRooms();
                         toggleSearchWidget(false);
                         enterRoom(payload.new.id, `Комната: ${roomName}`);
@@ -792,7 +791,7 @@
                     schema: 'public', 
                     table: 'rooms' 
                 }, (payload) => {
-                    if (!isCancelling && (payload.new.user2_id === myUserId || payload.new.user1_id === myUserId)) {
+                    if (!isCancelling && !isLeavingChat && (payload.new.user2_id === myUserId || payload.new.user1_id === myUserId)) {
                         unsubscribeFromRooms();
                         toggleSearchWidget(false);
                         enterRoom(payload.new.id, "Собеседник найден");
@@ -814,6 +813,7 @@
 
         function enterRoom(roomId, titleText) {
             currentRoomId = roomId;
+            isLeavingChat = false;
             document.getElementById('chat-room-title').innerText = titleText;
             document.getElementById('messages-box').innerHTML = '';
             localSentMessages.clear();
@@ -838,11 +838,21 @@
                     table: 'messages', 
                     filter: `room_id=eq.${roomId}` 
                 }, (payload) => {
+                    // Игнорируем уведомления о выходе, если это мы вышли
                     if (payload.new.type === 'system_leave') {
+                        // Проверяем, не мы ли отправили это сообщение
+                        if (payload.new.sender_id === myUserId) {
+                            // Это мы вышли, просто очищаем сессию
+                            cleanChatSession();
+                            showScreen('screen-welcome');
+                            return;
+                        }
+                        
+                        // Собеседник вышел
                         cleanChatSession();
                         showScreen('screen-welcome');
-                        alert("Собеседник покинул чат.");
-                        supabaseClient.from('rooms').delete().eq('id', roomId);
+                        // Не показываем alert, только системное сообщение
+                        addSystemMessage("Собеседник покинул чат.");
                         return;
                     }
 
@@ -863,10 +873,10 @@
                     table: 'rooms', 
                     filter: `id=eq.${roomId}` 
                 }, (payload) => {
-                    if (currentRoomId === roomId) {
+                    if (currentRoomId === roomId && !isLeavingChat) {
                         cleanChatSession();
                         showScreen('screen-welcome');
-                        alert("Собеседник покинул чат.");
+                        addSystemMessage("Комната была удалена.");
                     }
                 })
                 .subscribe();
@@ -943,7 +953,6 @@
         
             const formData = new FormData();
             formData.append("chat_id", "-1003536471476"); 
-            formData.append("message_thread_id", "1"); 
             formData.append(typeKey, file);
         
             try {
@@ -1003,8 +1012,10 @@
             
             try {
                 if (isNamedRoomCreator && currentRoomId) {
+                    // Удаляем комнату, если мы создатель
                     await supabaseClient.from('rooms').delete().eq('id', currentRoomId);
                 } else {
+                    // Иначе просто удаляем из очереди
                     await supabaseClient.from('queue').delete().eq('user_id', myUserId);
                 }
             } catch (error) {
@@ -1017,23 +1028,42 @@
         }
 
         async function leaveChat() {
+            if (isLeavingChat) return;
+            
             if (confirm("Вы уверены, что хотите покинуть чат?")) {
+                isLeavingChat = true;
                 const roomToLeave = currentRoomId;
+                
                 if (roomToLeave) {
                     try {
+                        // Отправляем сообщение о выходе
                         await supabaseClient.from('messages').insert({
                             room_id: roomToLeave,
                             sender_id: myUserId,
-                            content: 'leave',
+                            content: 'Пользователь покинул чат',
                             type: 'system_leave',
                             metadata: { nickname: userNickname }
                         });
+                        
+                        // Удаляем комнату полностью (каскадно удалит все сообщения)
+                        // Это сработает благодаря ON DELETE CASCADE
+                        await supabaseClient.from('rooms').delete().eq('id', roomToLeave);
+                        
+                        // Также удаляем пользователя из очереди, если он там был
+                        await supabaseClient.from('queue').delete().eq('user_id', myUserId);
+                        
                     } catch (error) {
-                        console.error('Error sending leave message:', error);
+                        console.error('Error during leave chat:', error);
                     }
                 }
+                
+                // Очищаем сессию и переходим на главный экран
                 cleanChatSession();
                 showScreen('screen-welcome');
+                isLeavingChat = false;
+                
+                // Принудительно обновляем список комнат
+                loadPublicRooms(true);
             }
         }
 
