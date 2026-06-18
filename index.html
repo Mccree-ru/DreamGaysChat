@@ -185,8 +185,8 @@
             text-align: center;
         }
 
-        /* Защита медиафайлов от скачивания и копирования */
-        .message img, .message video {
+        /* Защита картинок от перетаскивания и копирования */
+        .message img {
             max-width: 100%;
             max-height: 250px;
             border-radius: 10px;
@@ -194,6 +194,17 @@
             margin-top: 5px;
             pointer-events: none;
             -webkit-touch-callout: none;
+        }
+
+        /* Настройки видео: кликабельно, но без кнопки скачивания */
+        .message video {
+            max-width: 100%;
+            max-height: 250px;
+            border-radius: 10px;
+            display: block;
+            margin-top: 5px;
+            -webkit-touch-callout: none;
+            background: #000;
         }
 
         .chat-input-area {
@@ -326,12 +337,12 @@
         const TG_BOT_TOKEN = "8998246333:AAHI0pr4lgsqmwvQTgbKYZ5iwWaqiOJLZqM";
         const TG_STORAGE_CHAT_ID = "1878167621";
 
+        // Безопасное определение ID пользователя (из Telegram или случайное)
+        let myUserId = 'local_' + Math.random().toString(36).substr(2, 9);
         const tg = window.Telegram?.WebApp;
-        if (tg) { tg.expand(); tg.ready(); }
-
-        const myUserId = tg?.initDataUnsafe?.user?.id 
-            ? String(tg.initDataUnsafe.user.id) 
-            : 'local_' + Math.random().toString(36).substr(2, 9);
+        if (tg && tg.initDataUnsafe?.user?.id) {
+            myUserId = String(tg.initDataUnsafe.user.id);
+        }
 
         let userNickname = "";
         let currentRoomId = null;
@@ -414,6 +425,7 @@
                 video.controls = true;
                 video.controlsList = "nodownload nofullscreen"; 
                 video.addEventListener('dragstart', e => e.preventDefault());
+                video.addEventListener('contextmenu', e => e.preventDefault());
                 msg.appendChild(video);
             }
             
@@ -424,7 +436,7 @@
         async function startSearch() {
             setNickname();
             isNamedRoomCreator = false;
-            document.getElementById('search-status').innerText = "Ищем свободного собеседника...";
+            document.getElementById('search-status').innerText = "Ищем свободного собеседника... ";
             showScreen('screen-search');
             
             const { data, error } = await supabaseClient.rpc('try_match_user', { current_user_id: myUserId });
@@ -600,19 +612,31 @@
             }
         }
 
-        document.getElementById('btn-start-search').addEventListener('click', startSearch);
-        document.getElementById('btn-create-named-room').addEventListener('click', createNamedRoom);
-        document.getElementById('btn-cancel-search').addEventListener('click', cancelSearch);
-        document.getElementById('btn-leave-chat').addEventListener('click', leaveChat);
-        document.getElementById('btn-send-message').addEventListener('click', sendMessage);
-        document.getElementById('btn-media-attach').addEventListener('click', () => document.getElementById('media-file-input').click());
-        
-        document.getElementById('media-file-input').addEventListener('change', (e) => {
-            if (e.target.files[0]) { uploadAndSendMedia(e.target.files[0]); e.target.value = ''; }
-        });
-        document.getElementById('chat-message-input').addEventListener('keypress', (e) => { if (e.key === 'Enter') sendMessage(); });
+        // Запуск логики и Telegram WebApp ПОСЛЕ полной загрузки страницы
+        window.addEventListener('DOMContentLoaded', () => {
+            if (window.Telegram?.WebApp) {
+                try {
+                    window.Telegram.WebApp.ready();
+                    window.Telegram.WebApp.expand();
+                } catch (e) {
+                    console.error("Ошибка инициализации Telegram SDK: ", e);
+                }
+            }
 
-        showScreen('screen-welcome');
+            document.getElementById('btn-start-search').addEventListener('click', startSearch);
+            document.getElementById('btn-create-named-room').addEventListener('click', createNamedRoom);
+            document.getElementById('btn-cancel-search').addEventListener('click', cancelSearch);
+            document.getElementById('btn-leave-chat').addEventListener('click', leaveChat);
+            document.getElementById('btn-send-message').addEventListener('click', sendMessage);
+            document.getElementById('btn-media-attach').addEventListener('click', () => document.getElementById('media-file-input').click());
+            
+            document.getElementById('media-file-input').addEventListener('change', (e) => {
+                if (e.target.files[0]) { uploadAndSendMedia(e.target.files[0]); e.target.value = ''; }
+            });
+            document.getElementById('chat-message-input').addEventListener('keypress', (e) => { if (e.key === 'Enter') sendMessage(); });
+
+            showScreen('screen-welcome');
+        });
     </script>
 </body>
 </html>
