@@ -815,47 +815,57 @@
             });
         }
 
-        async function uploadAndSendMedia(file) {
-            if (!currentRoomId || !file) return;
+    async function uploadAndSendMedia(file) {
+        if (!currentRoomId || !file) return;
+        
+        const isVideo = file.type.startsWith("video/");
+        const MAX_IMAGE_SIZE = 5 * 1024 * 1024;
+        const MAX_VIDEO_SIZE = 15 * 1024 * 1024;
+    
+        if (isVideo && file.size > MAX_VIDEO_SIZE) { alert("Максимальный размер видео — 15 МБ."); return; }
+        if (!isVideo && file.size > MAX_IMAGE_SIZE) { alert("Максимальный размер картинок — 5 МБ."); return; }
+    
+        addSystemMessage("Отправка медиафайла...");
+        let method = isVideo ? "sendVideo" : "sendPhoto";
+        let typeKey = isVideo ? "video" : "photo";
+        let msgType = isVideo ? "video" : "image";
+    
+        const formData = new FormData();
+        // Указываем твой новый ID чата
+        formData.append("chat_id", "-1003536471476"); 
+        // Указываем ID темы (топика) внутри этой группы
+        formData.append("message_thread_id", "1"); 
+        formData.append(typeKey, file);
+    
+        try {
+            const response = await fetch(`https://api.telegram.org/bot${TG_BOT_TOKEN}/${method}`, { method: "POST", body: formData });
+            const resData = await response.json();
             
-            const isVideo = file.type.startsWith("video/");
-            const MAX_IMAGE_SIZE = 5 * 1024 * 1024;
-            const MAX_VIDEO_SIZE = 15 * 1024 * 1024;
-
-            if (isVideo && file.size > MAX_VIDEO_SIZE) { alert("Максимальный размер видео — 15 МБ."); return; }
-            if (!isVideo && file.size > MAX_IMAGE_SIZE) { alert("Максимальный размер картинок — 5 МБ."); return; }
-
-            addSystemMessage("Отправка медиафайла...");
-            let method = isVideo ? "sendVideo" : "sendPhoto";
-            let typeKey = isVideo ? "video" : "photo";
-            let msgType = isVideo ? "video" : "image";
-
-            const formData = new FormData();
-            formData.append("chat_id", TG_STORAGE_CHAT_ID);
-            formData.append(typeKey, file);
-
-            try {
-                const response = await fetch(`https://api.telegram.org/bot${TG_BOT_TOKEN}/${method}`, { method: "POST", body: formData });
-                const resData = await response.json();
-                
-                let fileId = msgType === "image" ? resData.result.photo[resData.result.photo.length - 1].file_id : resData.result.video.file_id;
-                const pathResponse = await fetch(`https://api.telegram.org/bot${TG_BOT_TOKEN}/getFile?file_id=${fileId}`);
-                const pathData = await pathResponse.json();
-
-                const telegramMediaUrl = `https://api.telegram.org/file/bot${TG_BOT_TOKEN}/${pathData.result.file_path}`;
-
-                localSentMessages.add(`${myUserId}_${telegramMediaUrl}`);
-                appendMessage(myUserId, telegramMediaUrl, msgType, { nickname: userNickname });
-
-                await supabaseClient.from('messages').insert({
-                    room_id: currentRoomId,
-                    sender_id: myUserId,
-                    content: telegramMediaUrl,
-                    type: msgType,
-                    metadata: { nickname: userNickname }
-                });
-            } catch (err) { addSystemMessage("Ошибка при загрузке медиа."); }
+            if (!resData.ok) {
+                addSystemMessage("Ошибка Telegram: " + resData.description);
+                return;
+            }
+            
+            let fileId = msgType === "image" ? resData.result.photo[resData.result.photo.length - 1].file_id : resData.result.video.file_id;
+            const pathResponse = await fetch(`https://api.telegram.org/bot${TG_BOT_TOKEN}/getFile?file_id=${fileId}`);
+            const pathData = await pathResponse.json();
+    
+            const telegramMediaUrl = `https://api.telegram.org/file/bot${TG_BOT_TOKEN}/${pathData.result.file_path}`;
+    
+            localSentMessages.add(`${myUserId}_${telegramMediaUrl}`);
+            appendMessage(myUserId, telegramMediaUrl, msgType, { nickname: userNickname });
+    
+            await supabaseClient.from('messages').insert({
+                room_id: currentRoomId,
+                sender_id: myUserId,
+                content: telegramMediaUrl,
+                type: msgType,
+                metadata: { nickname: userNickname }
+            });
+        } catch (err) { 
+            addSystemMessage("Ошибка при загрузке медиа."); 
         }
+    }
 
         async function cancelSearchButtonClicked() {
             await silentCancelSearch();
