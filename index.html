@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Чат-Рулетка</title>
+    <title>Анонимный Чат-Рулетка</title>
     
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     
@@ -52,7 +52,6 @@
             overflow-y: auto;
         }
 
-        /* Виджет фонового поиска на главном экране */
         .search-status-widget {
             display: none;
             width: 100%;
@@ -451,8 +450,6 @@
         let roomsSubscription = null;
         let chatSubscription = null;
         let mainRefreshInterval = null;
-        
-        // Флаг, указывающий, находится ли пользователь в состоянии фонового поиска / ожидания
         let isSearchingCurrently = false; 
 
         const localSentMessages = new Set();
@@ -475,8 +472,6 @@
             if (error) return;
 
             const listContainer = document.getElementById('rooms-list');
-            
-            // Фильтруем комнаты, исключая созданную нами же, чтобы не зайти к самому себе
             const availableRooms = data ? data.filter(r => r.user1_id !== myUserId) : [];
 
             if (availableRooms.length === 0) {
@@ -578,7 +573,6 @@
             return msg;
         }
 
-        // ВКЛЮЧЕНИЕ / ВЫКЛЮЧЕНИЕ ВИДЖЕТА ОЖИДАНИЯ
         function toggleSearchWidget(active, text = "") {
             const widget = document.getElementById('search-widget');
             const btnSearch = document.getElementById('btn-start-search');
@@ -601,7 +595,6 @@
         async function startSearch() {
             setNickname();
             isNamedRoomCreator = false;
-            
             toggleSearchWidget(true, "Ищем свободного собеседника...");
             
             const { data, error } = await supabaseClient.rpc('try_match_user', { current_user_id: myUserId });
@@ -636,13 +629,12 @@
             subscribeToNamedRoomUpdates(data.room_id, roomName);
         }
 
-        // ЕСЛИ КЛИКНУЛИ НА ЧУЖУЮ КОМНАТУ ИЗ СПИСКА
         async function joinSpecificRoom(roomId, roomName) {
             setNickname();
             
-            // КЛЮЧЕВОЙ МОМЕНТ: если у нас висел свой поиск или своя комната — молча отменяем её
             if (isSearchingCurrently) {
                 await silentCancelSearch();
+                toggleSearchWidget(false); // Закрываем плашку старого поиска
             }
 
             isNamedRoomCreator = false;
@@ -796,13 +788,11 @@
             } catch (err) { addSystemMessage("Ошибка при загрузке медиа."); }
         }
 
-        // Ручная отмена поиска по кнопке на виджете
         async function cancelSearchButtonClicked() {
             await silentCancelSearch();
             toggleSearchWidget(false);
         }
 
-        // Функция автоматического удаления старого поиска / старой комнаты перед входом в чужую
         async function silentCancelSearch() {
             unsubscribeFromRooms();
             if (isNamedRoomCreator && currentRoomId) {
