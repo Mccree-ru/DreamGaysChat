@@ -5,8 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Анонимный Чат-Рулетка</title>
     
+    <!-- Telegram Web Apps SDK -->
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     
+    <!-- Supabase JS SDK -->
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 
     <style>
@@ -185,7 +187,11 @@
             text-align: center;
         }
 
-        /* Защита картинок от перетаскивания и копирования */
+        /* Оптимистичный статус "отправка..." */
+        .message.pending {
+            opacity: 0.6;
+        }
+
         .message img {
             max-width: 100%;
             max-height: 250px;
@@ -196,7 +202,6 @@
             -webkit-touch-callout: none;
         }
 
-        /* Настройки видео: кликабельно, но без кнопки скачивания */
         .message video {
             max-width: 100%;
             max-height: 250px;
@@ -290,6 +295,7 @@
 </head>
 <body>
 
+    <!-- 1. ЭКРАН ПРИВЕТСТВИЯ -->
     <div id="screen-welcome" class="screen active">
         <h1 style="margin-bottom: 20px;">Анонимный Чат</h1>
         
@@ -307,12 +313,14 @@
         </div>
     </div>
 
+    <!-- 2. ЭКРАН ПОИСКА / ОЖИДАНИЯ -->
     <div id="screen-search" class="screen">
         <div class="loader"></div>
         <p style="margin-bottom: 20px; text-align: center;" id="search-status">Ищем свободного собеседника...</p>
         <button id="btn-cancel-search" class="btn btn-danger">Отмена</button>
     </div>
 
+    <!-- 3. ЭКРАН ЧАТА -->
     <div id="screen-chat" class="screen">
         <div class="chat-header">
             <span id="chat-room-title">Чат</span>
@@ -337,7 +345,6 @@
         const TG_BOT_TOKEN = "8998246333:AAHI0pr4lgsqmwvQTgbKYZ5iwWaqiOJLZqM";
         const TG_STORAGE_CHAT_ID = "1878167621";
 
-        // Безопасное определение ID пользователя (из Telegram или случайное)
         let myUserId = 'local_' + Math.random().toString(36).substr(2, 9);
         const tg = window.Telegram?.WebApp;
         if (tg && tg.initDataUnsafe?.user?.id) {
@@ -350,6 +357,9 @@
         let roomsSubscription = null;
         let chatSubscription = null;
         let mainRefreshInterval = null;
+        
+        // Буфер для предотвращения дублирования сообщений из Realtime
+        const localSentMessages = new Set();
 
         function showScreen(screenId) {
             document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
@@ -398,10 +408,11 @@
             box.scrollTop = box.scrollHeight;
         }
 
-        function appendMessage(senderId, content, type = 'text', metadata = null) {
+        function appendMessage(senderId, content, type = 'text', metadata = null, isPending = false) {
             const box = document.getElementById('messages-box');
             const msg = document.createElement('div');
             msg.className = (senderId === myUserId) ? 'message my' : 'message interlocutor';
+            if (isPending) msg.classList.add('pending');
             
             if (senderId !== myUserId && metadata && metadata.nickname) {
                 const title = document.createElement('span');
@@ -431,12 +442,13 @@
             
             box.appendChild(msg);
             box.scrollTop = box.scrollHeight;
+            return msg;
         }
 
         async function startSearch() {
             setNickname();
             isNamedRoomCreator = false;
-            document.getElementById('search-status').innerText = "Ищем свободного собеседника... ";
+            document.getElementById('search-status').innerText = "Ищем свободного собеседника...";
             showScreen('screen-search');
             
             const { data, error } = await supabaseClient.rpc('try_match_user', { current_user_id: myUserId });
@@ -514,6 +526,7 @@
             currentRoomId = roomId;
             document.getElementById('chat-room-title').innerText = titleText;
             document.getElementById('messages-box').innerHTML = '';
+            localSentMessages.clear();
             showScreen('screen-chat');
             addSystemMessage("Вы подключились. Приятного общения!");
             subscribeToChatEvents(roomId);
@@ -522,6 +535,11 @@
         function subscribeToChatEvents(roomId) {
             chatSubscription = supabaseClient.channel(`room_${roomId}`)
                 .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `room_id=eq.${roomId}` }, (payload) => {
+                    // Если это сообщение отправили мы и оно уже отрисовано оптимистично, игнорируем дубль
+                    const msgKey = `${payload.new.sender_id}_${payload.new.content}`;
+                    if (payload.new.sender_id === myUserId && localSentMessages.has(msgKey)) {
+                        return; 
+                    }
                     appendMessage(payload.new.sender_id, payload.new.content, payload.new.type, payload.new.metadata);
                 })
                 .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'rooms', filter: `id=eq.${roomId}` }, (payload) => {
@@ -536,6 +554,7 @@
             if (chatSubscription) { supabaseClient.removeChannel(chatSubscription); chatSubscription = null; }
             currentRoomId = null;
             isNamedRoomCreator = false;
+            localSentMessages.clear();
         }
 
         async function sendMessage() {
@@ -544,12 +563,24 @@
             if (!text || !currentRoomId) return;
             input.value = '';
 
-            await supabaseClient.from('messages').insert({
+            // ОПТИМИСТИЧНЫЙ ИНТЕРФЕЙС: Выводим сообщение на экран СРАЗУ, без задержек
+            const pendingMsg = appendMessage(myUserId, text, 'text', { nickname: userNickname }, true);
+            const msgKey = `${myUserId}_${text}`;
+            localSentMessages.add(msgKey);
+
+            // Отправляем в базу на заднем фоне (асинхронно)
+            supabaseClient.from('messages').insert({
                 room_id: currentRoomId,
                 sender_id: myUserId,
                 content: text,
                 type: 'text',
                 metadata: { nickname: userNickname }
+            }).then(({ error }) => {
+                if (!error) {
+                    pendingMsg.classList.remove('pending'); // Убираем прозрачность, отправка успешна
+                } else {
+                    pendingMsg.style.backgroundColor = '#551a1a'; // Красный оттенок, если ошибка
+                }
             });
         }
 
@@ -582,6 +613,10 @@
 
                 const telegramMediaUrl = `https://api.telegram.org/file/bot${TG_BOT_TOKEN}/${pathData.result.file_path}`;
 
+                // Локально метим медиа, чтобы не дублировать
+                localSentMessages.add(`${myUserId}_${telegramMediaUrl}`);
+                appendMessage(myUserId, telegramMediaUrl, msgType, { nickname: userNickname });
+
                 await supabaseClient.from('messages').insert({
                     room_id: currentRoomId,
                     sender_id: myUserId,
@@ -612,7 +647,6 @@
             }
         }
 
-        // Запуск логики и Telegram WebApp ПОСЛЕ полной загрузки страницы
         window.addEventListener('DOMContentLoaded', () => {
             if (window.Telegram?.WebApp) {
                 try {
