@@ -189,18 +189,16 @@
             opacity: 0.6;
         }
 
-        /* Превью картинок в чате */
         .message img {
             max-width: 100%;
             max-height: 250px;
             border-radius: 10px;
             display: block;
             margin-top: 5px;
-            cursor: pointer; /* Показываем, что кликабельно */
+            cursor: pointer;
             -webkit-touch-callout: none;
         }
 
-        /* Превью видео в чате */
         .message video {
             max-width: 100%;
             max-height: 250px;
@@ -292,7 +290,6 @@
             font-weight: bold;
         }
 
-        /* МОДАЛЬНОЕ ОКНО ДЛЯ ПОЛНОЭКРАННОГО ПРОСМОТРА С МАКСИМАЛЬНОЙ ЗАЩИТОЙ */
         .fullscreen-overlay {
             display: none;
             position: fixed;
@@ -319,7 +316,6 @@
             -webkit-touch-callout: none;
         }
 
-        /* Запрещаем перетаскивать картинку на весь экран */
         .fullscreen-overlay img {
             pointer-events: none; 
         }
@@ -463,11 +459,10 @@
             box.scrollTop = box.scrollHeight;
         }
 
-        // ОТКРЫТИЕ МЕДИА НА ВЕСЬ ЭКРАН
         function openMediaFullscreen(url, type) {
             const overlay = document.getElementById('media-viewer-overlay');
             const container = document.getElementById('viewer-content-box');
-            container.innerHTML = ''; // Очищаем старый контент
+            container.innerHTML = '';
 
             if (type === 'image') {
                 const img = document.createElement('img');
@@ -491,7 +486,7 @@
         function closeMediaFullscreen() {
             const overlay = document.getElementById('media-viewer-overlay');
             const container = document.getElementById('viewer-content-box');
-            container.innerHTML = ''; // Останавливаем воспроизведение видео при закрытии
+            container.innerHTML = '';
             overlay.classList.remove('active');
         }
 
@@ -516,17 +511,15 @@
                 const img = document.createElement('img');
                 img.src = content;
                 img.addEventListener('dragstart', e => e.preventDefault());
-                // Клик открывает картинку на весь экран
                 img.addEventListener('click', () => openMediaFullscreen(content, 'image'));
                 msg.appendChild(img);
             } else if (type === 'video') {
                 const video = document.createElement('video');
                 video.src = content;
-                video.controls = false; // Отключаем элементы управления в самом чате, чтобы клик открывал весь экран
+                video.controls = false;
                 video.muted = true;
                 video.addEventListener('dragstart', e => e.preventDefault());
                 video.addEventListener('contextmenu', e => e.preventDefault());
-                // Клик открывает видео на весь экран, где уже будут кнопки Play/Громкость
                 video.addEventListener('click', () => openMediaFullscreen(content, 'video'));
                 msg.appendChild(video);
             }
@@ -626,6 +619,16 @@
         function subscribeToChatEvents(roomId) {
             chatSubscription = supabaseClient.channel(`room_${roomId}`)
                 .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `room_id=eq.${roomId}` }, (payload) => {
+                    // НАДЕЖНАЯ ПРОВЕРКА НА ВЫХОД ИЗ ЧАТА
+                    if (payload.new.type === 'system_leave') {
+                        cleanChatSession();
+                        showScreen('screen-welcome');
+                        alert("Собеседник покинул чат.");
+                        // Автоматически вычищаем пустую комнату из базы данных
+                        supabaseClient.from('rooms').delete().eq('id', roomId);
+                        return;
+                    }
+
                     const msgKey = `${payload.new.sender_id}_${payload.new.content}`;
                     if (payload.new.sender_id === myUserId && localSentMessages.has(msgKey)) {
                         return; 
@@ -633,9 +636,12 @@
                     appendMessage(payload.new.sender_id, payload.new.content, payload.new.type, payload.new.metadata);
                 })
                 .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'rooms', filter: `id=eq.${roomId}` }, (payload) => {
-                    cleanChatSession();
-                    showScreen('screen-welcome');
-                    alert("Собеседник покинул чат.");
+                    // Резервный триггер на случай, если сообщение о выходе не дошло
+                    if (currentRoomId === roomId) {
+                        cleanChatSession();
+                        showScreen('screen-welcome');
+                        alert("Собеседник покинул чат.");
+                    }
                 })
                 .subscribe();
         }
@@ -658,7 +664,6 @@
             const msgKey = `${myUserId}_${text}`;
             localSentMessages.add(msgKey);
 
-            // Асинхронная отправка
             supabaseClient.from('messages').insert({
                 room_id: currentRoomId,
                 sender_id: myUserId,
@@ -727,11 +732,24 @@
             showScreen('screen-welcome');
         }
 
+        // КОРРЕКТНЫЙ И НАДЕЖНЫЙ ВЫХОД
         async function leaveChat() {
             if (confirm("Вы уверены, что хотите покинуть чат?")) {
                 const roomToLeave = currentRoomId;
+                
+                if (roomToLeave) {
+                    // Шаг 1: Сначала шлем в базу системный флаг о том, что мы выходим
+                    await supabaseClient.from('messages').insert({
+                        room_id: roomToLeave,
+                        sender_id: myUserId,
+                        content: 'leave',
+                        type: 'system_leave',
+                        metadata: { nickname: userNickname }
+                    });
+                }
+                
+                // Шаг 2: Закрываем чат у себя локально и возвращаемся на главный экран
                 cleanChatSession();
-                if (roomToLeave) await supabaseClient.from('rooms').delete().eq('id', roomToLeave);
                 showScreen('screen-welcome');
             }
         }
@@ -752,8 +770,6 @@
             document.getElementById('btn-leave-chat').addEventListener('click', leaveChat);
             document.getElementById('btn-send-message').addEventListener('click', sendMessage);
             document.getElementById('btn-media-attach').addEventListener('click', () => document.getElementById('media-file-input').click());
-            
-            // Кнопка закрытия просмотрщика медиа
             document.getElementById('btn-close-viewer').addEventListener('click', closeMediaFullscreen);
 
             document.getElementById('media-file-input').addEventListener('change', (e) => {
